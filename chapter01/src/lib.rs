@@ -68,16 +68,22 @@ struct Lexer {
     _position: usize,
 }
 
-struct Parser {
-    _lexer: Lexer,
-    _START: NodeID,
-    _nodes: NodePool
-}
-
 struct NodePool {
     _nodes: Vec<Node>
 }
 
+struct Parser {
+    _lexer: Lexer,
+    // The Start node
+    _START: NodeID,
+    _nodes: NodePool
+}
+
+// All nodes are instantiated inside a pool
+// This is firstly so that we can pass around NodeIDs and keep
+// Rust happy
+// But also because we will be using the pool to find nodes
+// that are the same, and reuse them in later chapters
 impl NodePool {
     fn new() -> Self {
         let pool = NodePool {
@@ -106,7 +112,6 @@ impl NodePool {
             .get_mut(nid)
             .expect("Invalid node id: get failed")
     }
-
 }
 
 impl Node {
@@ -228,6 +233,8 @@ impl Parser {
 
 }
 
+const EOF_CHAR : char = 0 as char;
+
 impl Lexer {
     // True if at EOF
     fn is_eof(&self) -> bool {
@@ -236,7 +243,7 @@ impl Lexer {
 
     fn peek(&self) -> char {
         if self.is_eof() {
-            char::MAX
+            EOF_CHAR
         } else {
             self._input[self._position]
         }
@@ -250,7 +257,10 @@ impl Lexer {
 
     // True if a white space
     fn is_white_space(&self) -> bool {
-        self.peek() <= ' '
+        match self.peek() {
+            ' ' | '\t' | '\n' | '\r' => true,
+            _ => false
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -304,26 +314,6 @@ impl Lexer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // #[test]
-    // fn test_return_node() {
-    //     let mut parser = Parser::new(String::from("return 1"));
-    //     let ret_node_id = parser.new_return(3, 6);
-    //     {
-    //         let ret_node = parser.get(ret_node_id);
-    //         assert_eq!(ret_node.ctrl(), 3);
-    //         assert_eq!(ret_node.ctrl(), 3);
-    //         assert_eq!(ret_node.expr(), 6);
-    //         assert_eq!(ret_node.expr(), 6);
-    //     }
-    //     {
-    //         let ret_node = parser.get(ret_node_id);
-    //         assert_eq!(ret_node.ctrl(), 3);
-    //         assert_eq!(ret_node.ctrl(), 3);
-    //         assert_eq!(ret_node.expr(), 6);
-    //         assert_eq!(ret_node.expr(), 6);
-    //     }
-    // }
 
     #[test]
     fn test_lexer() {
