@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
-    "chapter01"
+    "chapter01",
+    "chapter02"
 ]
 resolver = "2"
