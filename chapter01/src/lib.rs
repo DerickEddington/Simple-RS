@@ -111,12 +111,11 @@ impl Lexer {
     }
 
     fn peek(&self) -> char {
-        let c = if self.is_eof() {
+        if self.is_eof() {
             char::MAX
         } else {
             self._input[self._position]
-        };
-        c
+        }
     }
 
     fn next_char(&mut self) -> char {
