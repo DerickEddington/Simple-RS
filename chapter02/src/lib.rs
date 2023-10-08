@@ -1,4 +1,5 @@
 use std::cell::{RefCell};
+use std::rc::Rc;
 
 type NodeID = usize;
 
@@ -109,7 +110,7 @@ struct Lexer {
 }
 
 struct NodePool {
-    _nodes: RefCell<Vec<Node>>
+    _nodes: RefCell<Vec<Rc<Node>>>
 }
 
 const _NONE : NodeID = 0 as NodeID;
@@ -145,17 +146,17 @@ impl NodePool {
     pub fn add(&self, node: NodeOp) -> NodeID {
         let mut pool = self._nodes.borrow_mut();
         let id = pool.len();
-        pool.push(Node {
+        pool.push(Rc::new(Node {
             _nid: id,
             _op: node,
             _inputs: RefCell::new(Vec::new()),
             _outputs: RefCell::new(Vec::new()),
-        });
+        }));
         id
     }
 
-    fn get(&self, nid: NodeID) -> &Node {
-        self._nodes.borrow().get(nid).expect("Invalid node id: get failed")
+    fn get(&self, nid: NodeID) -> Rc<Node> {
+        Rc::clone(self._nodes.borrow().get(nid).expect("Invalid node id: get failed"))
     }
 }
 
@@ -227,7 +228,8 @@ impl Node {
     // to null.  This may recursively kill more Nodes and is basically dead
     // code elimination.  This function is co-recursive with {@link #set_def}.
     fn kill(&self, pool: &NodePool) {
-        for i in 0..self._inputs.borrow().len() {
+        let len = self._inputs.borrow().len();
+        for i in 0..len {
             let kill_node = self.set_def(i, _NONE, pool);
             if kill_node != _NONE {
 
@@ -253,7 +255,7 @@ impl Node {
             // Find this node in the other nodes outputs
             let my_idx = old_def_node.find_output(self._nid).unwrap();
             // Move the last node to this node's place
-            if !old_def_node.move_last_output(my_idx) { // If we removed the last use, the old def is now dead
+            if !old_def_node.move_last_output(my_idx) {    // If we removed the last use, the old def is now dead
                 kill_node = old_def;                       // Kill old def
             }
         }
@@ -629,36 +631,32 @@ mod tests {
     //     assert_eq!(42, parser._lexer.parse_number());
     // }
 
-    // #[test]
-    // fn test_parse() {
-    //     let mut parser = Parser::new(String::from("return 42;"));
-    //     let n = parser.parse();
-    //     let return_node = parser._nodes.get(n);
-    //     match return_node._op {
-    //         NodeOp::Return => {
-    //             // control input must be START
-    //             let ctrl_n = return_node.ctrl();
-    //             assert_eq!(ctrl_n, _START);
-    //             // data input must be the constant
-    //             let data_n = return_node.expr();
-    //             let constant_node = parser._nodes.get(data_n);
-    //             match constant_node._op {
-    //                 NodeOp::Constant { _value } => {
-    //                     assert_eq!(constant_node._inputs.len(), 1);
-    //                     assert_eq!(42, _value);
-    //                     assert_eq!(parser._START, constant_node._inputs[0]) // START node
-    //                 }
-    //                 _ => assert!(false),
-    //             }
-    //             let start_node = parser._nodes.get(ctrl_n);
-    //             match start_node._op {
-    //                 NodeOp::Start => {
-    //                     assert_eq!(0, start_node._inputs.len());
-    //                 }
-    //                 _ => assert!(false),
-    //             }
-    //         }
-    //         _ => assert!(false),
-    //     }
-    // }
+    #[test]
+    fn test_parse() {
+        let mut parser = Parser::new(String::from("return 1+2*3+-5;"));
+        let ret_id = parser.parse();
+        let return_node = parser._pool.get(ret_id);
+        match return_node._op {
+            NodeOp::Return => {
+                // data input must be the constant
+                let data_n = return_node.expr();
+                let constant_node = parser._pool.get(data_n);
+                match constant_node._op {
+                    NodeOp::Constant { _type } => {
+                        let ty = _type;
+                        match ty {
+                            Type::Integer { _con } => {
+                                assert_eq!(2, _con);
+                            },
+                            _ => {
+                                assert!(false);
+                            }
+                        }
+                    }
+                    _ => assert!(false),
+                }
+            },
+            _ => assert!(false),
+        }
+    }
 }
