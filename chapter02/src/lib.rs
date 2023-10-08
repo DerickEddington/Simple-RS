@@ -206,14 +206,23 @@ impl Node {
         self._outputs.borrow_mut().push(n);
     }
 
-    fn move_last_output(&self, idx: usize) -> bool {
+    // Set the node at specified input position
+    fn set_input(&self, idx: usize, n: NodeID) { self._inputs.borrow_mut()[idx] = n; }
+
+    // Move the last output to position idx
+    // Remove the last output
+    // return the idx of the output that was removed
+    fn move_last_output(&self, idx: usize) -> usize {
         let mut outputs = self._outputs.borrow_mut();
-        if outputs.len() > 1 && idx < outputs.len() {
-            outputs[idx] = outputs.pop().unwrap();
-            true
+        let len = outputs.len();
+        if len == 0 {
+            0
         }
         else {
-            false
+            let last_idx = len-1;
+            outputs[idx] = outputs[last_idx];
+            outputs.remove(last_idx);
+            last_idx
         }
     }
 
@@ -230,10 +239,7 @@ impl Node {
     fn kill(&self, pool: &NodePool) {
         let len = self._inputs.borrow().len();
         for i in 0..len {
-            let kill_node = self.set_def(i, _NONE, pool);
-            if kill_node != _NONE {
-
-            }
+            self.set_def(i, _NONE, pool);
         }
     }
 
@@ -247,26 +253,24 @@ impl Node {
     //     
     // @param idx which def to set
     // @param new_def the new definition
-    fn set_def(&self, idx: usize, new_def: NodeID, pool: &NodePool) -> NodeID {
-        let mut kill_node = _NONE;
+    fn set_def(&self, idx: usize, new_def: NodeID, pool: &NodePool) {
         let old_def = self.inp(idx);
         if old_def != _NONE { // If the old def exists, remove a use->def edge
             let old_def_node = pool.get(old_def);
             // Find this node in the other nodes outputs
             let my_idx = old_def_node.find_output(self._nid).unwrap();
             // Move the last node to this node's place
-            if !old_def_node.move_last_output(my_idx) {    // If we removed the last use, the old def is now dead
-                kill_node = old_def;                       // Kill old def
+            if old_def_node.move_last_output(my_idx) == 0 {    // If we removed the last use, the old def is now dead
+                old_def_node.kill(pool);                       // Kill old def
             }
         }
         // Set the new_def over the old (killed) edge
-        self._inputs.borrow_mut()[idx] = new_def;
+        self.set_input(idx, new_def);
         // If new def is not null, add the corresponding use->def edge
         if new_def != _NONE {
             let new_def_node = pool.get(new_def);
             new_def_node.add_output(self._nid)
         }
-        kill_node
     }
 
     fn inp(&self, idx: usize) -> NodeID {
@@ -519,12 +523,6 @@ impl Parser {
     fn new_constant(&mut self, value: Type) -> NodeID {
         Node::new(&self._pool, NodeOp::Constant { _type: value }, &vec![_START])
     }
-
-    // create StartNode
-    fn new_start(&mut self) -> NodeID {
-        Node::new(&self._pool, NodeOp::Start, &vec![])
-    }
-
 }
 
 const EOF_CHAR : char = 0 as char;
