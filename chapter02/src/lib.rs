@@ -1,3 +1,5 @@
+use std::cell::{RefCell};
+
 type NodeID = usize;
 
 // These types are part of a Monotone Analysis Framework,
@@ -87,7 +89,7 @@ struct Node {
     // Generally fixed length, ordered, nulls allowed, no unused trailing space.
     // Ordering is required because e.g. "a/b" is different from "b/a".
     // The first input (offset 0) is often a Control node.
-    _inputs: Vec<NodeID>,
+    _inputs: RefCell<Vec<NodeID>>,
 
     // Outputs reference Nodes that are not null and have this Node as an
     // input.  These nodes are users of this node, thus these are def-use
@@ -96,7 +98,7 @@ struct Node {
     // Outputs directly match inputs, making a directed graph that can be
     // walked in either direction.  These outputs are typically used for
     // efficient optimizations but otherwise have no semantics meaning.
-    _outputs: Vec<NodeID>,
+    _outputs: RefCell<Vec<NodeID>>,
 }
 
 struct Lexer {
@@ -107,7 +109,7 @@ struct Lexer {
 }
 
 struct NodePool {
-    _nodes: Vec<Node>
+    _nodes: RefCell<Vec<Node>>
 }
 
 const _NONE : NodeID = 0 as NodeID;
@@ -115,7 +117,7 @@ const _START : NodeID = 1 as NodeID;
 
 struct Parser {
     _lexer: Lexer,
-    _nodes: NodePool
+    _pool: NodePool
 }
 
 impl Type {
@@ -135,74 +137,83 @@ impl Type {
 impl NodePool {
     fn new() -> Self {
         let pool = NodePool {
-            _nodes: Vec::new()
+            _nodes: RefCell::new(Vec::new())
         };
         pool
     }
 
-    pub fn add(&mut self, node: NodeOp) -> NodeID {
-        let id = self._nodes.len();
-        self._nodes.push(Node {
+    pub fn add(&self, node: NodeOp) -> NodeID {
+        let mut pool = self._nodes.borrow_mut();
+        let id = pool.len();
+        pool.push(Node {
             _nid: id,
             _op: node,
-            _inputs: Vec::new(),
-            _outputs: Vec::new(),
+            _inputs: RefCell::new(Vec::new()),
+            _outputs: RefCell::new(Vec::new()),
         });
         id
     }
 
     fn get(&self, nid: NodeID) -> &Node {
-        self._nodes.get(nid).expect("Invalid node id: get failed")
-    }
-
-    fn get_mut(&mut self, nid: NodeID) -> &mut Node {
-        self._nodes
-            .get_mut(nid)
-            .expect("Invalid node id: get failed")
+        self._nodes.borrow().get(nid).expect("Invalid node id: get failed")
     }
 }
 
 impl Node {
 
-    fn new(pool: &mut NodePool, op: NodeOp, inputs: &Vec<NodeID>) -> NodeID {
+    fn new(pool: &NodePool, op: NodeOp, inputs: &Vec<NodeID>) -> NodeID {
         let my_id = pool.add(op);
-        let me = pool.get_mut(my_id);
-        me._inputs = inputs.clone();
+        let me = pool.get(my_id);
+        me.copy_inputs(inputs);
         for n in inputs {
-            let user = pool.get_mut(*n);
+            let user = pool.get(*n);
             user.add_output(my_id);
         }
         my_id
     }
 
+    fn copy_inputs(&self, source: &Vec<NodeID>) {
+        let mut inputs = self._inputs.borrow_mut();
+        inputs.clear();
+        for nid in source {
+            inputs.push(*nid)
+        }
+    }
+
     fn ctrl(&self) -> NodeID {
         match self._op {
-            NodeOp::Return => self._inputs[0],
+            NodeOp::Return => self._inputs.borrow()[0],
             _ => panic!("ctrl node not available"),
         }
     }
     fn expr(&self) -> NodeID {
         match self._op {
-            NodeOp::Return => self._inputs[1],
+            NodeOp::Return => self._inputs.borrow()[1],
             _ => panic!("expr node not available"),
         }
     }
 
-    // Get iterator on inputs
-    fn inputs(&self) -> std::slice::Iter<'_, NodeID> {
-        self._inputs.iter()
-    }
-
     // Add supplied NodeID to outputs
-    fn add_input(&mut self, n: NodeID, pool: &mut NodePool) {
-        self._inputs.push(n);
-        let other = pool.get_mut(n);
+    fn add_input(&self, n: NodeID, pool: &NodePool) {
+        self._inputs.borrow_mut().push(n);
+        let other = pool.get(n);
         other.add_output(self._nid)
     }
 
     // Add supplied NodeID to outputs
-    fn add_output(&mut self, n: NodeID) {
-        self._outputs.push(n);
+    fn add_output(&self, n: NodeID) {
+        self._outputs.borrow_mut().push(n);
+    }
+
+    fn move_last_output(&self, idx: usize) -> bool {
+        let mut outputs = self._outputs.borrow_mut();
+        if outputs.len() > 1 && idx < outputs.len() {
+            outputs[idx] = outputs.pop().unwrap();
+            true
+        }
+        else {
+            false
+        }
     }
 
     fn get_type(&self) -> Type {
@@ -215,14 +226,17 @@ impl Node {
     // Kill a Node with no <em>uses</em>, by setting all of its <em>defs</em>
     // to null.  This may recursively kill more Nodes and is basically dead
     // code elimination.  This function is co-recursive with {@link #set_def}.
-    fn kill(&mut self, pool: &mut NodePool) {
-        for i in 0..self._inputs.len() {
-            self.set_def(i, _NONE, pool);
+    fn kill(&self, pool: &NodePool) {
+        for i in 0..self._inputs.borrow().len() {
+            let kill_node = self.set_def(i, _NONE, pool);
+            if kill_node != _NONE {
+
+            }
         }
     }
 
     fn find_output(&self, n: NodeID) -> Option<usize> {
-        self._outputs.iter().position(|&r| r == n)
+        self._outputs.borrow().iter().position(|&r| r == n)
     }
 
     // Change a <em>def</em> into a Node.  Keeps the edges correct, by removing
@@ -231,32 +245,33 @@ impl Node {
     //     
     // @param idx which def to set
     // @param new_def the new definition
-    fn set_def(&mut self, idx: usize, new_def: NodeID, pool: &mut NodePool) {
+    fn set_def(&self, idx: usize, new_def: NodeID, pool: &NodePool) -> NodeID {
+        let mut kill_node = _NONE;
         let old_def = self.inp(idx);
         if old_def != _NONE { // If the old def exists, remove a use->def edge
-            let old_def_node = pool.get_mut(old_def);
+            let old_def_node = pool.get(old_def);
             // Find this node in the other nodes outputs
             let my_idx = old_def_node.find_output(self._nid).unwrap();
             // Move the last node to this node's place
-            old_def_node._outputs[my_idx] = old_def_node._outputs.pop().unwrap();         
-            if old_def_node._outputs.len() == 1 { // If we removed the last use, the old def is now dead
-                old_def_node.kill(pool); // // Kill old def
+            if !old_def_node.move_last_output(my_idx) { // If we removed the last use, the old def is now dead
+                kill_node = old_def;                       // Kill old def
             }
         }
         // Set the new_def over the old (killed) edge
-        self._inputs[idx] = new_def;
+        self._inputs.borrow_mut()[idx] = new_def;
         // If new def is not null, add the corresponding use->def edge
         if new_def != _NONE {
-            let new_def_node = pool.get_mut(new_def);
-            new_def_node._outputs.push(self._nid)
+            let new_def_node = pool.get(new_def);
+            new_def_node.add_output(self._nid)
         }
+        kill_node
     }
 
     fn inp(&self, idx: usize) -> NodeID {
-        self._inputs[idx]
+        self._inputs.borrow()[idx]
     }
 
-    fn add(&mut self, pool: &NodePool) -> Type {
+    fn add(&self, pool: &NodePool) -> Type {
         let in1 = pool.get(self.inp(1));
         let in2 = pool.get(self.inp(2));
         match in1.get_type() {
@@ -274,7 +289,7 @@ impl Node {
         }
     }
 
-    fn sub(&mut self, pool: &NodePool) -> Type {
+    fn sub(&self, pool: &NodePool) -> Type {
         let in1 = pool.get(self.inp(1));
         let in2 = pool.get(self.inp(2));
         match in1.get_type() {
@@ -292,7 +307,7 @@ impl Node {
         }
     }
 
-    fn mul(&mut self, pool: &NodePool) -> Type {
+    fn mul(&self, pool: &NodePool) -> Type {
         let in1 = pool.get(self.inp(1));
         let in2 = pool.get(self.inp(2));
         match in1.get_type() {
@@ -310,7 +325,7 @@ impl Node {
         }
     }
 
-    fn div(&mut self, pool: &NodePool) -> Type {
+    fn div(&self, pool: &NodePool) -> Type {
         let in1 = pool.get(self.inp(1));
         let in2 = pool.get(self.inp(2));
         match in1.get_type() {
@@ -329,7 +344,7 @@ impl Node {
         }
     }
 
-    fn minus(&mut self, pool: &NodePool) -> Type {
+    fn minus(&self, pool: &NodePool) -> Type {
         let in1 = pool.get(self.inp(1));
         match in1.get_type() {
             Type::Integer { _con } => {
@@ -340,7 +355,7 @@ impl Node {
         }
     }
 
-    fn compute(&mut self, pool: &NodePool) -> Type {
+    fn compute(&self, pool: &NodePool) -> Type {
         match self._op {
             NodeOp::Add => self.add(pool),
             NodeOp::Sub => self.sub(pool),
@@ -351,7 +366,7 @@ impl Node {
         }
     }
 
-    fn peephole(&mut self, pool: &mut NodePool) -> NodeID {
+    fn peephole(&self, pool: &NodePool) -> NodeID {
         let computed_type = self.compute(pool);
         match self._op {
             NodeOp::Constant { _type } => self._nid,
@@ -371,16 +386,16 @@ impl Node {
 
 impl Parser {
     fn new(source: String) -> Self {
-        let mut parser = Parser {
+        let parser = Parser {
             _lexer: Lexer {
                 _input: source.chars().collect(),
                 _position: 0,
             },
-            _nodes: NodePool::new()
+            _pool: NodePool::new()
         };
         // Create a None node at with _nid=0
-        let none = Node::new(&mut parser._nodes, NodeOp::None, &vec![]);
-        let start = Node::new(&mut parser._nodes, NodeOp::Start, &vec![]);
+        let none = Node::new(&parser._pool, NodeOp::None, &vec![]);
+        let start = Node::new(&parser._pool, NodeOp::Start, &vec![]);
         if none != _NONE || start != _START {
             panic!("Unexpected error: initial nodes do not have expected values");
         }
@@ -410,15 +425,15 @@ impl Parser {
         let lhs_id = self.parse_multiplication();
         if self._lexer.match_string(String::from("+")) {
             let rhs_id = self.parse_addition();
-            let add_id = Node::new(&mut self._nodes, NodeOp::Add, &vec![_NONE, lhs_id, rhs_id]);
-            let add_node = self._nodes.get_mut(add_id);
-            add_node.peephole(&mut self._nodes)
+            let add_id = Node::new(&self._pool, NodeOp::Add, &vec![_NONE, lhs_id, rhs_id]);
+            let add_node = self._pool.get(add_id);
+            add_node.peephole(&self._pool)
         }
         else if self._lexer.match_string(String::from("-")) {
             let rhs_id = self.parse_addition();
-            let sub_id = Node::new(&mut self._nodes, NodeOp::Sub, &vec![_NONE, lhs_id, rhs_id]);
-            let sub_node = self._nodes.get_mut(sub_id);
-            sub_node.peephole(&mut self._nodes)
+            let sub_id = Node::new(&self._pool, NodeOp::Sub, &vec![_NONE, lhs_id, rhs_id]);
+            let sub_node = self._pool.get(sub_id);
+            sub_node.peephole(&self._pool)
         }
         else {
             lhs_id
@@ -429,15 +444,15 @@ impl Parser {
         let lhs_id = self.parse_unary();
         if self._lexer.match_string(String::from("*")) {
             let rhs_id = self.parse_multiplication();
-            let mul_id = Node::new(&mut self._nodes, NodeOp::Mul, &vec![_NONE, lhs_id, rhs_id]);
-            let mul_node = self._nodes.get_mut(mul_id);
-            mul_node.peephole(&mut self._nodes)
+            let mul_id = Node::new(&self._pool, NodeOp::Mul, &vec![_NONE, lhs_id, rhs_id]);
+            let mul_node = self._pool.get(mul_id);
+            mul_node.peephole(&self._pool)
         }
         else if self._lexer.match_string(String::from("/")) {
             let rhs_id = self.parse_multiplication();
-            let div_id = Node::new(&mut self._nodes, NodeOp::Div, &vec![_NONE, lhs_id, rhs_id]);
-            let div_node = self._nodes.get_mut(div_id);
-            div_node.peephole(&mut self._nodes)
+            let div_id = Node::new(&self._pool, NodeOp::Div, &vec![_NONE, lhs_id, rhs_id]);
+            let div_node = self._pool.get(div_id);
+            div_node.peephole(&self._pool)
         }
         else {
             lhs_id
@@ -447,9 +462,9 @@ impl Parser {
     fn parse_unary(&mut self) -> NodeID {
         if self._lexer.match_string(String::from("-")) {
             let unary = self.parse_unary();
-            let nid = Node::new( &mut self._nodes, NodeOp::Minus, &vec![_NONE, unary]);
-            let node = self._nodes.get_mut(nid);
-            node.peephole(&mut self._nodes)
+            let nid = Node::new( &self._pool, NodeOp::Minus, &vec![_NONE, unary]);
+            let node = self._pool.get(nid);
+            node.peephole(&self._pool)
         }
         else {
             self.parse_primary()
@@ -475,8 +490,8 @@ impl Parser {
     fn parse_integer_literal(&mut self) -> NodeID {
         let value = self._lexer.parse_number();
         let nid = self.new_constant(value);
-        let node = self._nodes.get_mut(nid);
-        node.peephole(&mut self._nodes)
+        let node = self._pool.get(nid);
+        node.peephole(&self._pool)
     }
 
     fn require(&mut self, syntax: String) {
@@ -495,17 +510,17 @@ impl Parser {
 
     // Create ReturnNode
     fn new_return(&mut self, ctrl: NodeID, data: NodeID) -> NodeID {
-        Node::new(&mut self._nodes, NodeOp::Return, &vec![ctrl, data])
+        Node::new(&self._pool, NodeOp::Return, &vec![ctrl, data])
     }
 
     // Create ConstantNode
     fn new_constant(&mut self, value: Type) -> NodeID {
-        Node::new(&mut self._nodes, NodeOp::Constant { _type: value }, &vec![_START])
+        Node::new(&self._pool, NodeOp::Constant { _type: value }, &vec![_START])
     }
 
     // create StartNode
     fn new_start(&mut self) -> NodeID {
-        Node::new(&mut self._nodes, NodeOp::Start, &vec![])
+        Node::new(&self._pool, NodeOp::Start, &vec![])
     }
 
 }
